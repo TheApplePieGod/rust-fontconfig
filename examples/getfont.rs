@@ -6,13 +6,18 @@ fn main() {
     let cache = FcFontCache::build();
     let end = Instant::now();
 
+    println!("cache list: found {} fonts", cache.list().len());
+
     let start2 = Instant::now();
-    let result = cache.query(&FcPattern {
-        name: Some(String::from("Purisa")),
-        ..Default::default()
-    });
+    let results = cache.query(
+        &FcPattern {
+            name: Some(String::from("Gilroy")),
+            ..Default::default()
+        },
+        &mut Vec::new(),
+    );
     let end2 = Instant::now();
 
     println!("built cache in: {:?}", end - start);
-    println!("font path: {:?} - queried in {:?}", result, end2 - start2);
+    println!("queried in {:?}", end2 - start2);
 }
