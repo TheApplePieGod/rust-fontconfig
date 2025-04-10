@@ -859,11 +859,12 @@ impl FcFontCache {
     }
 
     /// Queries a font from the in-memory cache, returns the first found font (early return)
-    pub fn query(&self, pattern: &FcPattern, trace: &mut Vec<TraceMsg>) -> Option<FontMatch> {
+    pub fn query(&self, pattern: &FcPattern, trace: Option<&mut Vec<TraceMsg>>) -> Option<FontMatch> {
         let mut matches = Vec::new();
+        let mut trace = trace;
 
         for (stored_pattern, id) in &self.patterns {
-            if Self::query_matches_internal(stored_pattern, pattern, trace) {
+            if Self::query_matches_internal(stored_pattern, pattern, trace.as_deref_mut()) {
                 let metadata = self.metadata.get(id).unwrap_or(stored_pattern);
                 let coverage = Self::calculate_unicode_coverage(&metadata.unicode_ranges);
                 let style_score = Self::calculate_style_score(pattern, metadata);
@@ -876,7 +877,7 @@ impl FcFontCache {
 
         matches.first().map(|(id, _, _, metadata)| {
             // Find fallbacks for this font
-            let fallbacks = self.find_fallbacks(metadata, trace);
+            let fallbacks = self.find_fallbacks(metadata, trace.as_deref_mut());
 
             FontMatch {
                 id: *id,
@@ -887,11 +888,12 @@ impl FcFontCache {
     }
 
     /// Queries all fonts matching a pattern
-    pub fn query_all(&self, pattern: &FcPattern, trace: &mut Vec<TraceMsg>) -> Vec<FontMatch> {
+    pub fn query_all(&self, pattern: &FcPattern, trace: Option<&mut Vec<TraceMsg>>) -> Vec<FontMatch> {
         let mut matches = Vec::new();
+        let mut trace = trace;
 
         for (stored_pattern, id) in &self.patterns {
-            if Self::query_matches_internal(stored_pattern, pattern, trace) {
+            if Self::query_matches_internal(stored_pattern, pattern, trace.as_deref_mut()) {
                 let metadata = self.metadata.get(id).unwrap_or(stored_pattern);
                 let coverage = Self::calculate_unicode_coverage(&metadata.unicode_ranges);
                 let style_score = Self::calculate_style_score(pattern, metadata);
@@ -905,7 +907,7 @@ impl FcFontCache {
         matches
             .into_iter()
             .map(|(id, _, _, metadata)| {
-                let fallbacks = self.find_fallbacks(&metadata, trace);
+                let fallbacks = self.find_fallbacks(&metadata, trace.as_deref_mut());
 
                 FontMatch {
                     id,
@@ -919,7 +921,7 @@ impl FcFontCache {
     fn find_fallbacks(
         &self,
         pattern: &FcPattern,
-        _trace: &mut Vec<TraceMsg>,
+        _trace: Option<&mut Vec<TraceMsg>>,
     ) -> Vec<FontMatchNoFallback> {
         let mut candidates = Vec::new();
 
@@ -987,9 +989,10 @@ impl FcFontCache {
         &self,
         pattern: &FcPattern,
         text: &str,
-        trace: &mut Vec<TraceMsg>,
+        trace: Option<&mut Vec<TraceMsg>>,
     ) -> Vec<FontMatch> {
-        let base_matches = self.query_all(pattern, trace);
+        let mut trace = trace;
+        let base_matches = self.query_all(pattern, trace.as_deref_mut());
 
         // Early return if no matches or text is empty
         if base_matches.is_empty() || text.is_empty() {
@@ -1034,14 +1037,16 @@ impl FcFontCache {
                         end: c_value,
                     });
 
-                    trace.push(TraceMsg {
-                        level: TraceLevel::Warning,
-                        path: "<fallback search>".to_string(),
-                        reason: MatchReason::UnicodeRangeMismatch {
-                            character: c,
-                            ranges: Vec::new(),
-                        },
-                    });
+                    if let Some(trace) = trace.as_deref_mut() {
+                        trace.push(TraceMsg {
+                            level: TraceLevel::Warning,
+                            path: "<fallback search>".to_string(),
+                            reason: MatchReason::UnicodeRangeMismatch {
+                                character: c,
+                                ranges: Vec::new(),
+                            },
+                        });
+                    }
                 }
             }
 
@@ -1072,7 +1077,7 @@ impl FcFontCache {
     fn query_matches_internal(
         k: &FcPattern,
         pattern: &FcPattern,
-        trace: &mut Vec<TraceMsg>,
+        trace: Option<&mut Vec<TraceMsg>>,
     ) -> bool {
         // Check name - substring match
         if let Some(ref name) = pattern.name {
@@ -1082,17 +1087,19 @@ impl FcFontCache {
                 .map_or(false, |k_name| k_name.contains(name));
 
             if !matches {
-                trace.push(TraceMsg {
-                    level: TraceLevel::Info,
-                    path: k
-                        .name
-                        .as_ref()
-                        .map_or_else(|| "<unknown>".to_string(), Clone::clone),
-                    reason: MatchReason::NameMismatch {
-                        requested: pattern.name.clone(),
-                        found: k.name.clone(),
-                    },
-                });
+                if let Some(trace) = trace {
+                    trace.push(TraceMsg {
+                        level: TraceLevel::Info,
+                        path: k
+                            .name
+                            .as_ref()
+                            .map_or_else(|| "<unknown>".to_string(), Clone::clone),
+                        reason: MatchReason::NameMismatch {
+                            requested: pattern.name.clone(),
+                            found: k.name.clone(),
+                        },
+                    });
+                }
                 return false;
             }
         }
@@ -1105,17 +1112,19 @@ impl FcFontCache {
                 .map_or(false, |k_family| k_family.contains(family));
 
             if !matches {
-                trace.push(TraceMsg {
-                    level: TraceLevel::Info,
-                    path: k
-                        .name
-                        .as_ref()
-                        .map_or_else(|| "<unknown>".to_string(), Clone::clone),
-                    reason: MatchReason::FamilyMismatch {
-                        requested: pattern.family.clone(),
-                        found: k.family.clone(),
-                    },
-                });
+                if let Some(trace) = trace {
+                    trace.push(TraceMsg {
+                        level: TraceLevel::Info,
+                        path: k
+                            .name
+                            .as_ref()
+                            .map_or_else(|| "<unknown>".to_string(), Clone::clone),
+                        reason: MatchReason::FamilyMismatch {
+                            requested: pattern.family.clone(),
+                            found: k.family.clone(),
+                        },
+                    });
+                }
                 return false;
             }
         }
@@ -1166,51 +1175,57 @@ impl FcFontCache {
                     _ => (String::new(), String::new()),
                 };
 
-                trace.push(TraceMsg {
-                    level: TraceLevel::Info,
-                    path: k
-                        .name
-                        .as_ref()
-                        .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
-                    reason: MatchReason::StyleMismatch {
-                        property: property_name,
-                        requested,
-                        found,
-                    },
-                });
+                if let Some(trace) = trace {
+                    trace.push(TraceMsg {
+                        level: TraceLevel::Info,
+                        path: k
+                            .name
+                            .as_ref()
+                            .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
+                        reason: MatchReason::StyleMismatch {
+                            property: property_name,
+                            requested,
+                            found,
+                        },
+                    });
+                }
                 return false;
             }
         }
 
         // Check weight
         if pattern.weight != FcWeight::Normal && pattern.weight != k.weight {
-            trace.push(TraceMsg {
-                level: TraceLevel::Info,
-                path: k
-                    .name
-                    .as_ref()
-                    .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
-                reason: MatchReason::WeightMismatch {
-                    requested: pattern.weight,
-                    found: k.weight,
-                },
-            });
+            if let Some(trace) = trace {
+                trace.push(TraceMsg {
+                    level: TraceLevel::Info,
+                    path: k
+                        .name
+                        .as_ref()
+                        .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
+                    reason: MatchReason::WeightMismatch {
+                        requested: pattern.weight,
+                        found: k.weight,
+                    },
+                });
+            }
             return false;
         }
 
         // Check stretch
         if pattern.stretch != FcStretch::Normal && pattern.stretch != k.stretch {
-            trace.push(TraceMsg {
-                level: TraceLevel::Info,
-                path: k
-                    .name
-                    .as_ref()
-                    .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
-                reason: MatchReason::StretchMismatch {
-                    requested: pattern.stretch,
-                    found: k.stretch,
-                },
-            });
+            if let Some(trace) = trace {
+                trace.push(TraceMsg {
+                    level: TraceLevel::Info,
+                    path: k
+                        .name
+                        .as_ref()
+                        .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
+                    reason: MatchReason::StretchMismatch {
+                        requested: pattern.stretch,
+                        found: k.stretch,
+                    },
+                });
+            }
             return false;
         }
 
@@ -1231,17 +1246,19 @@ impl FcFontCache {
             }
 
             if !has_overlap {
-                trace.push(TraceMsg {
-                    level: TraceLevel::Info,
-                    path: k
-                        .name
-                        .as_ref()
-                        .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
-                    reason: MatchReason::UnicodeRangeMismatch {
-                        character: '\0', // No specific character to report
-                        ranges: k.unicode_ranges.clone(),
-                    },
-                });
+                if let Some(trace) = trace {
+                    trace.push(TraceMsg {
+                        level: TraceLevel::Info,
+                        path: k
+                            .name
+                            .as_ref()
+                            .map_or_else(|| "<unknown>".to_string(), |s| s.clone()),
+                        reason: MatchReason::UnicodeRangeMismatch {
+                            character: '\0', // No specific character to report
+                            ranges: k.unicode_ranges.clone(),
+                        },
+                    });
+                }
                 return false;
             }
         }
